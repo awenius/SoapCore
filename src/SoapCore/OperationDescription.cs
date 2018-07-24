@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.ServiceModel;
 using System.Xml;
 using System.Xml.Serialization;
@@ -25,12 +25,20 @@ namespace SoapCore
 		public string ReplyAction { get; private set; }
 		public string Name { get; private set; }
 		public MethodInfo DispatchMethod { get; private set; }
+		/// <summary>
+		/// The actual method from the type that implements the service.
+		/// It is used to retrieve custom attributes from the method.
+		/// </summary>
+		public MethodInfo ImplementingMethod { get; private set; }
 		public bool IsOneWay { get; private set; }
 		public SoapMethodParameterInfo[] NormalParameters { get; private set; }
 		public SoapMethodParameterInfo[] OutParameters { get;private set;}
 		public string ReturnName {get;private set;}
 
-		public OperationDescription(ContractDescription contract, MethodInfo operationMethod, OperationContractAttribute contractAttribute)
+		public OperationDescription(ContractDescription contract,
+									MethodInfo operationMethod,
+									MethodInfo implementingMethod,
+									OperationContractAttribute contractAttribute)
 		{
 			Contract = contract;
 			Name = contractAttribute.Name ?? operationMethod.Name;
@@ -38,6 +46,7 @@ namespace SoapCore
 			IsOneWay = contractAttribute.IsOneWay;
 			ReplyAction = contractAttribute.ReplyAction;
 			DispatchMethod = operationMethod;
+			ImplementingMethod = implementingMethod;
 			NormalParameters = operationMethod.GetParameters().Where(x => !x.IsOut && !x.ParameterType.IsByRef)
 				.Select(info => CreateParameterInfo(info, contract)).ToArray();
 			OutParameters = operationMethod.GetParameters().Where(x => x.IsOut || x.ParameterType.IsByRef)

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.ServiceModel;
@@ -13,7 +13,10 @@ namespace SoapCore
 		public Type ContractType { get; private set; }
 		public IEnumerable<OperationDescription> Operations { get; private set; }
 
-		public ContractDescription(ServiceDescription service, Type contractType, ServiceContractAttribute attribute)
+		public ContractDescription(	ServiceDescription service,
+									Type contractType,
+									Type implementingType,
+									ServiceContractAttribute attribute)
 		{
 			Service = service;
 			ContractType = contractType;
@@ -25,10 +28,45 @@ namespace SoapCore
 			{
 				foreach (var operationContract in operationMethodInfo.GetCustomAttributes<OperationContractAttribute>())
 				{
-					operations.Add(new OperationDescription(this, operationMethodInfo, operationContract));
+					MethodInfo implementingMethod = GetImplementingMethod(contractType, implementingType, operationMethodInfo);
+					operations.Add(new OperationDescription(this, operationMethodInfo, implementingMethod, operationContract));
 				}
 			}
 			Operations = operations;
+		}
+
+
+		/// <summary>
+		/// Returns the method that actually implements the action.
+		/// </summary>
+		/// <param name="contractType">
+		/// The type of the interface that declares the service.
+		/// </param>
+		/// <param name="implementingType">
+		/// The type of the class that implements the service.
+		/// </param>
+		/// <param name="operationMethodInfo">
+		/// The method from the interface type that describes the method.
+		/// </param>
+		/// <returns>
+		/// The method from the implementing class that relates to the passed interface method.
+		/// </returns>
+		private MethodInfo GetImplementingMethod(Type contractType, Type implementingType, MethodInfo operationMethodInfo)
+		{
+			MethodInfo result = null;
+
+			InterfaceMapping mapping = implementingType.GetInterfaceMap(contractType);
+
+			for (int ii = 0; ii < mapping.InterfaceMethods.Length; ii++)
+			{
+				if (mapping.InterfaceMethods[ii] == operationMethodInfo)
+				{
+					result = mapping.TargetMethods[ii];
+					break;
+				}
+			}
+
+			return result;
 		}
 	}
 }

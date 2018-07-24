@@ -1,19 +1,15 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Runtime.Serialization;
-using System.ServiceModel;
-using System.ServiceModel.Channels;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.Serialization;
+using System.ServiceModel.Channels;
+using System.Threading.Tasks;
 
 namespace SoapCore
 {
@@ -25,6 +21,7 @@ namespace SoapCore
 		private readonly string _endpointPath;
 		private readonly MessageEncoder _messageEncoder;
 		private readonly SoapSerializer _serializer;
+		private readonly IAuthenticationChecker _authenticationChecker;
 
 		public SoapEndpointMiddleware(ILogger<SoapEndpointMiddleware> logger, RequestDelegate next, Type serviceType, string path, MessageEncoder encoder, SoapSerializer serializer)
 		{
@@ -34,6 +31,7 @@ namespace SoapCore
 			_messageEncoder = encoder;
 			_serializer = serializer;
 			_service = new ServiceDescription(serviceType);
+			_authenticationChecker = new AuthenticationChecker();
 		}
 
 		public async Task Invoke(HttpContext httpContext, IServiceProvider serviceProvider)
@@ -194,6 +192,17 @@ namespace SoapCore
 				}
 				_logger.LogInformation($"Request for operation {operation.Contract.Name}.{operation.Name} received");
 
+				
+				bool isAuthenticated = _authenticationChecker.CheckAuthentication(httpContext,
+																				 _service.ServiceType,
+																				 operation.ImplementingMethod);
+
+				if (!isAuthenticated)
+				{
+					responseMessage = WriteErrorResponseMessage("Not authenticated", StatusCodes.Status401Unauthorized, httpContext);
+					return responseMessage;
+				}
+	
 				try
 				{
 					//Create an instance of the service class
@@ -347,14 +356,37 @@ namespace SoapCore
 			IServiceProvider serviceProvider,
 			HttpContext httpContext)
 		{
-			Message responseMessage;
-
-			// Create response message
-
 			string errorText = exception.InnerException != null ? exception.InnerException.Message : exception.Message; ;
 			var transformer = serviceProvider.GetService<ExceptionTransformer>();
 			if (transformer != null)
 				errorText = transformer.Transform(exception);
+
+			return WriteErrorResponseMessage(errorText, statusCode, httpContext);
+		}
+
+
+		/// <summary>
+		/// Returns an error response message with a predefined error text.
+		/// </summary>
+		/// <param name="errorText">
+		/// The error text that is added to the response message.
+		/// </param>
+		/// <param name="statusCode">
+		/// The HTTP status code that shall be returned to the caller.
+		/// </param>
+		/// <param name="httpContext">
+		/// The HTTP context that received the response message.
+		/// </param>
+		/// <returns>
+		/// Returns the constructed message (which is implicitly written to the response
+		/// and therefore must not be handled by the caller).
+		/// </returns>
+		private Message WriteErrorResponseMessage(
+			string errorText,
+			int statusCode,
+			HttpContext httpContext)
+		{
+			Message responseMessage;
 
 			var bodyWriter = new FaultBodyWriter(new Fault { FaultString = errorText });
 			responseMessage = Message.CreateMessage(_messageEncoder.MessageVersion, null, bodyWriter);

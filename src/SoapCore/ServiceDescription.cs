@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -24,7 +24,7 @@ namespace SoapCore
 			{
 				foreach (var serviceContract in contractType.GetTypeInfo().GetCustomAttributes<ServiceContractAttribute>())
 				{
-					contracts.Add(new ContractDescription(this, contractType, serviceContract));
+					contracts.Add(new ContractDescription(this, contractType, serviceType, serviceContract));
 				}
 			}
 

@@ -25,6 +25,20 @@ public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerF
 }
 ```
 
+### Authentication and Authorization
+
+SoapCore supports basic authentication and authorization.
+Any authentication middleware can be used.
+
+A service or service operation can be protected using the standard `Microsoft.AspNetCore.Authorization.AuthorizationAttribute` attribute.
+However, only a subset of this attributes functionality is supported:
+
+* A whole service may be protected by adding the `Authorize` attribute to the service implementation class.
+* A service operation may be protected by adding the `Authorize` attribute to the service implementation method.
+* The `Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute` attribute may be used to unprotect single methods if the whole service has been protected.
+
+In addition, the `Role` property of the `AuthorizeAttribute` attribute may be used. In this case, the user must be in one of the specified role for the call to be permitted. 
+
 ### References
 
 * [stackify.com/soap-net-core](https://stackify.com/soap-net-core/)
