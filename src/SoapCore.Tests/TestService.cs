@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.ServiceModel;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
 
 namespace SoapCore.Tests
 {
@@ -41,6 +43,11 @@ namespace SoapCore.Tests
 			throw new Exception(message);
 		}
 
+		public void ThrowDetailedFault(string detailMessage)
+		{
+			throw new FaultException<FaultDetail>(new FaultDetail { ExceptionProperty = detailMessage }, new FaultReason("test"), new FaultCode("test"), "test");
+		}
+
 		public string Overload(double d)
 		{
 			return "Overload(double)";
@@ -66,9 +73,25 @@ namespace SoapCore.Tests
 			test.ListProperty = new List<string> { "test", "list", "of", "strings" };
 		}
 
+		public ComplexModelInput ComplexParam(ComplexModelInput test)
+		{
+			return test;
+		}
+
+		public ComplexModelInputForModelBindingFilter ComplexParamWithModelBindingFilter(ComplexModelInputForModelBindingFilter test)
+		{
+			return test;
+		}
+
 		public void RefParam(ref string message)
 		{
 			message = "hello, world";
+		}
+
+		[ServiceFilter(typeof(ActionFilter.TestActionFilter))]
+		public ComplexModelInput ComplexParamWithActionFilter(ComplexModelInput test)
+		{
+			return test;
 		}
 	}
 }

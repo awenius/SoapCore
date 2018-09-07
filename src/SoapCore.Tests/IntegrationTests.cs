@@ -25,10 +25,11 @@ namespace SoapCore.Tests
 			}).Wait(1000);
 		}
 
-		private ITestService CreateClient()
+		private ITestService CreateClient(bool caseInsensitivePath = false)
 		{
 			var binding = new BasicHttpBinding();
-			var endpoint = new EndpointAddress(new Uri(string.Format("http://{0}:5050/Service.svc", "localhost")));
+			var endpoint = new EndpointAddress(new Uri(
+				string.Format("http://{0}:5050/{1}.svc", "localhost", caseInsensitivePath ? "serviceci" : "Service")));
 			var channelFactory = new ChannelFactory<ITestService>(binding, endpoint);
 			var serviceClient = channelFactory.CreateChannel();
 			return serviceClient;
@@ -43,6 +44,14 @@ namespace SoapCore.Tests
 			var channelFactory = new ChannelFactory<ITestService>(binding, endpoint);
 			var serviceClient = channelFactory.CreateChannel();
 			return serviceClient;
+		}
+
+		[TestMethod]
+		public void PingWithCaseInsensitivePath()
+		{
+			var client = CreateClient(caseInsensitivePath: true);
+			var result = client.Ping("hello, world");
+			Assert.AreEqual("hello, world", result);
 		}
 
 		[TestMethod]
@@ -153,6 +162,18 @@ namespace SoapCore.Tests
 				client.ThrowExceptionWithMessage("Your error message here");
 			});
 			Assert.AreEqual("Your error message here", e.Message);
+		}
+
+		[TestMethod]
+		public void ThrowsDetailedFault()
+		{
+			var client = CreateClient();
+			var e = Assert.ThrowsException<FaultException<FaultDetail>>(() =>
+			{
+				client.ThrowDetailedFault("Detail message");
+			});
+			Assert.IsNotNull(e.Detail);
+			Assert.AreEqual("Detail message", e.Detail.ExceptionProperty);
 		}
 	}
 }

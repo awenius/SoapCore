@@ -21,15 +21,17 @@ namespace SoapCore
 		private readonly string _endpointPath;
 		private readonly MessageEncoder _messageEncoder;
 		private readonly SoapSerializer _serializer;
+		private readonly StringComparison _pathComparisonStrategy;
 		private readonly IAuthenticationChecker _authenticationChecker;
 
-		public SoapEndpointMiddleware(ILogger<SoapEndpointMiddleware> logger, RequestDelegate next, Type serviceType, string path, MessageEncoder encoder, SoapSerializer serializer)
+		public SoapEndpointMiddleware(ILogger<SoapEndpointMiddleware> logger, RequestDelegate next, Type serviceType, string path, MessageEncoder encoder, SoapSerializer serializer, bool caseInsensitivePath)
 		{
 			_logger = logger;
 			_next = next;
 			_endpointPath = path;
 			_messageEncoder = encoder;
 			_serializer = serializer;
+			_pathComparisonStrategy = caseInsensitivePath ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 			_service = new ServiceDescription(serviceType);
 			_authenticationChecker = new AuthenticationChecker();
 		}
@@ -37,7 +39,7 @@ namespace SoapCore
 		public async Task Invoke(HttpContext httpContext, IServiceProvider serviceProvider)
 		{
 			httpContext.Request.EnableRewind();
-			if (httpContext.Request.Path.Equals(_endpointPath, StringComparison.Ordinal))
+			if (httpContext.Request.Path.Equals(_endpointPath, _pathComparisonStrategy))
 			{
 				_logger.LogDebug($"Received SOAP Request for {httpContext.Request.Path} ({httpContext.Request.ContentLength ?? 0} bytes)");
 
@@ -162,8 +164,9 @@ namespace SoapCore
 			//Get the message
 			var requestMessage = _messageEncoder.ReadMessage(httpContext.Request.Body, 0x10000, httpContext.Request.ContentType);
 
-			// Get MessageFilters
+			// Get MessageFilters, ModelBindingFilters
 			var messageFilters = serviceProvider.GetServices<IMessageFilter>();
+			var modelBindingFilters = serviceProvider.GetServices<IModelBindingFilter>();
 
 			// Execute request message filters
 			try
@@ -215,13 +218,32 @@ namespace SoapCore
 					}
 
 					// Get operation arguments from message
-					Dictionary<string, object> outArgs = new Dictionary<string, object>();
-					var arguments = GetRequestArguments(requestMessage, reader, operation, ref outArgs);
-					// avoid Concat() and ToArray() cost when no out args(this may be heavy operation)
-					var allArgs = outArgs.Count != 0 ? arguments.Concat(outArgs.Values).ToArray() : arguments;
+					var arguments = GetRequestArguments(requestMessage, reader, operation);
+
+					// Execute model binding filters
+					object modelBindingOutput = null;
+					foreach (var modelBindingFilter in modelBindingFilters)
+					{
+						foreach (var modelType in modelBindingFilter.ModelTypes)
+						{
+							foreach (var parameterInfo in operation.InParameters)
+							{
+								var arg = arguments[parameterInfo.Index];
+								if (arg != null && arg.GetType() == modelType)
+									modelBindingFilter.OnModelBound(arg, serviceProvider, out modelBindingOutput);
+							}
+						}
+					}
+
+					// Execute Mvc ActionFilters
+					foreach (var actionFilterAttr in operation.DispatchMethod.CustomAttributes.Where(a => a.AttributeType.Name == "ServiceFilterAttribute"))
+					{
+						var actionFilter = serviceProvider.GetService(actionFilterAttr.ConstructorArguments[0].Value as Type);
+						actionFilter.GetType().GetMethod("OnSoapActionExecuting").Invoke(actionFilter, new object[] { operation.Name, arguments, httpContext, modelBindingOutput });
+					}
 
 					// Invoke Operation method
-					var responseObject = operation.DispatchMethod.Invoke(serviceInstance, allArgs);
+					var responseObject = operation.DispatchMethod.Invoke(serviceInstance, arguments);
 					if (operation.DispatchMethod.ReturnType.IsConstructedGenericType && operation.DispatchMethod.ReturnType.GetGenericTypeDefinition() == typeof(Task<>))
 					{
 						var responseTask = (Task)responseObject;
@@ -234,17 +256,16 @@ namespace SoapCore
 						// VoidTaskResult
 						responseObject = null;
 					}
-					int i = arguments.Length;
+
 					var resultOutDictionary = new Dictionary<string, object>();
-					foreach (var outArg in outArgs)
+					foreach (var parameterInfo in operation.OutParameters)
 					{
-						resultOutDictionary[outArg.Key] = allArgs[i];
-						i++;
+						resultOutDictionary[parameterInfo.Name] = arguments[parameterInfo.Index];
 					}
 
 					// Create response message
 					var resultName = operation.ReturnName;
-					var bodyWriter = new ServiceBodyWriter(_serializer, operation.Contract.Namespace, operation.Name + "Response", resultName, responseObject, resultOutDictionary);
+					var bodyWriter = new ServiceBodyWriter(_serializer, operation, resultName, responseObject, resultOutDictionary);
 					responseMessage = Message.CreateMessage(_messageEncoder.MessageVersion, null, bodyWriter);
 					responseMessage = new CustomMessage(responseMessage);
 
@@ -262,23 +283,48 @@ namespace SoapCore
 				}
 			}
 
+			// Execute response message filters
+			try
+			{
+				foreach (var messageFilter in messageFilters) messageFilter.OnResponseExecuting(responseMessage);
+			}
+			catch (Exception ex) {
+				responseMessage = WriteErrorResponseMessage(ex, StatusCodes.Status500InternalServerError, serviceProvider, httpContext);
+				return responseMessage;
+			}
+
 			return responseMessage;
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
-		private object[] GetRequestArguments(Message requestMessage, System.Xml.XmlDictionaryReader xmlReader, OperationDescription operation, ref Dictionary<string, object> outArgs)
+		private object[] GetRequestArguments(Message requestMessage, System.Xml.XmlDictionaryReader xmlReader, OperationDescription operation)
 		{
-			var parameters = operation.NormalParameters;
-			// avoid reallocation
-			var arguments = new List<object>(parameters.Length + operation.OutParameters.Length);
+			var arguments = new object[operation.AllParameters.Length];
 
 			// Find the element for the operation's data
-			xmlReader.ReadStartElement(operation.Name, operation.Contract.Namespace);
-
-			for (int i = 0; i < parameters.Length; i++)
+			if (!operation.IsMessageContractRequest)
 			{
-				var parameterName = parameters[i].Name;
-				var parameterNs = parameters[i].Namespace;
+				xmlReader.ReadStartElement(operation.Name, operation.Contract.Namespace);
+			}
+
+			// if any ordering issues, possible to rewrite like:
+			/*while (!xmlReader.EOF)
+			{
+				var parameterInfo = operation.InParameters.FirstOrDefault(p => p.Name == xmlReader.LocalName && p.Namespace == xmlReader.NamespaceURI);
+				if (parameterInfo == null)
+				{
+					xmlReader.Skip();
+					continue;
+				}
+				var parameterName = parameterInfo.Name;
+				var parameterNs = parameterInfo.Namespace;
+				...
+			}*/
+
+			foreach (var parameterInfo in operation.InParameters)
+			{
+				var parameterName = parameterInfo.Name;
+				var parameterNs = parameterInfo.Namespace;
 
 				if (xmlReader.IsStartElement(parameterName, parameterNs))
 				{
@@ -286,9 +332,9 @@ namespace SoapCore
 
 					if (xmlReader.IsStartElement(parameterName, parameterNs))
 					{
-						var elementType = parameters[i].Parameter.ParameterType.GetElementType();
-						if (elementType == null || parameters[i].Parameter.ParameterType.IsArray)
-							elementType = parameters[i].Parameter.ParameterType;
+						var elementType = parameterInfo.Parameter.ParameterType.GetElementType();
+						if (elementType == null || parameterInfo.Parameter.ParameterType.IsArray)
+							elementType = parameterInfo.Parameter.ParameterType;
 
 						switch (_serializer)
 						{
@@ -297,13 +343,13 @@ namespace SoapCore
 									// see https://referencesource.microsoft.com/System.Xml/System/Xml/Serialization/XmlSerializer.cs.html#c97688a6c07294d5
 									var serializer = CachedXmlSerializer.GetXmlSerializer(elementType, parameterName, parameterNs);
 									lock (serializer)
-										arguments.Add(serializer.Deserialize(xmlReader));
+										arguments[parameterInfo.Index] = serializer.Deserialize(xmlReader);
 								}
 								break;
 							case SoapSerializer.DataContractSerializer:
 								{
 									var serializer = new DataContractSerializer(elementType, parameterName, parameterNs);
-									arguments.Add(serializer.ReadObject(xmlReader, verifyObjectName: true));
+									arguments[parameterInfo.Index] = serializer.ReadObject(xmlReader, verifyObjectName: true);
 								}
 								break;
 							default: throw new NotImplementedException();
@@ -312,23 +358,30 @@ namespace SoapCore
 				}
 				else
 				{
-					arguments.Add(null);
+					arguments[parameterInfo.Index] = null;
 				}
 			}
 
 			foreach (var parameterInfo in operation.OutParameters)
 			{
+				if (arguments[parameterInfo.Index] != null)
+				{
+					// do not overwrite input ref parameters
+					continue;
+				}
+
 				if (parameterInfo.Parameter.ParameterType.Name == "Guid&")
-					outArgs[parameterInfo.Name] = Guid.Empty;
+					arguments[parameterInfo.Index] = Guid.Empty;
 				else if (parameterInfo.Parameter.ParameterType.Name == "String&" || parameterInfo.Parameter.ParameterType.GetElementType().IsArray)
-					outArgs[parameterInfo.Name] = null;
+					arguments[parameterInfo.Index] = null;
 				else
 				{
 					var type = parameterInfo.Parameter.ParameterType.GetElementType();
-					outArgs[parameterInfo.Name] = Activator.CreateInstance(type);
+					arguments[parameterInfo.Index] = Activator.CreateInstance(type);
 				}
 			}
-			return arguments.ToArray();
+
+			return arguments;
 		}
 
 		/// <summary>
@@ -356,39 +409,13 @@ namespace SoapCore
 			IServiceProvider serviceProvider,
 			HttpContext httpContext)
 		{
+			object faultDetail = ExtractFaultDetail(exception.InnerException);
 			string errorText = exception.InnerException != null ? exception.InnerException.Message : exception.Message; ;
 			var transformer = serviceProvider.GetService<ExceptionTransformer>();
 			if (transformer != null)
 				errorText = transformer.Transform(exception);
 
-			return WriteErrorResponseMessage(errorText, statusCode, httpContext);
-		}
-
-
-		/// <summary>
-		/// Returns an error response message with a predefined error text.
-		/// </summary>
-		/// <param name="errorText">
-		/// The error text that is added to the response message.
-		/// </param>
-		/// <param name="statusCode">
-		/// The HTTP status code that shall be returned to the caller.
-		/// </param>
-		/// <param name="httpContext">
-		/// The HTTP context that received the response message.
-		/// </param>
-		/// <returns>
-		/// Returns the constructed message (which is implicitly written to the response
-		/// and therefore must not be handled by the caller).
-		/// </returns>
-		private Message WriteErrorResponseMessage(
-			string errorText,
-			int statusCode,
-			HttpContext httpContext)
-		{
-			Message responseMessage;
-
-			var bodyWriter = new FaultBodyWriter(new Fault { FaultString = errorText });
+			var bodyWriter = new FaultBodyWriter(new Fault(faultDetail) { FaultString = errorText});
 			responseMessage = Message.CreateMessage(_messageEncoder.MessageVersion, null, bodyWriter);
 			responseMessage = new CustomMessage(responseMessage);
 
@@ -398,6 +425,35 @@ namespace SoapCore
 			_messageEncoder.WriteMessage(responseMessage, httpContext.Response.Body);
 
 			return responseMessage;
+		}
+
+		/// <summary>
+		/// Helper to extract object of a detailed fault.
+		/// </summary>
+		/// <param name="exception">
+		/// The exception that caused the failure.
+		/// </param>
+		/// <returns>
+		/// Returns instance of T if the exception is of type FaultException<T>
+		/// otherwise returns null
+		/// </returns>
+		private object ExtractFaultDetail(
+			Exception exception) {
+			try
+			{
+				var type = exception.GetType();			
+				if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(FaultException<>))
+				{
+					var detailInfo = type.GetProperty("Detail");
+					return detailInfo?.GetValue(exception);
+				}
+			}
+			catch
+			{
+				return null;
+			}
+
+			return null;
 		}
 	}
 }

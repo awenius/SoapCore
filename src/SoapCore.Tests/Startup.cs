@@ -1,12 +1,14 @@
+using System;
+using System.Collections.Generic;
+using System.ServiceModel;
+using System.ServiceModel.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
-using System.Collections.Generic;
+
 using System.Security.Claims;
-using System.ServiceModel;
-using System.ServiceModel.Channels;
 using System.Threading.Tasks;
 using ZNetCS.AspNetCore.Authentication.Basic;
 using ZNetCS.AspNetCore.Authentication.Basic.Events;
@@ -19,7 +21,10 @@ namespace SoapCore.Tests
 		{
 			services.TryAddSingleton<TestService>();
 			services.TryAddSingleton<AuthenticationTestServiceWithAuthorizeAttribute>();
-			services.TryAddSingleton<AuthenticationTestService>();
+			services.TryAddSingleton<AuthenticationTestService>();			services.AddSoapModelBindingFilter(
+				new ModelBindingFilter.TestModelBindingFilter(new List<Type> { typeof(ComplexModelInputForModelBindingFilter) })
+			);
+			services.AddScoped<ActionFilter.TestActionFilter>();
 			services.AddMvc();
 
 			services
@@ -46,6 +51,14 @@ namespace SoapCore.Tests
 			{
 				app2.UseSoapEndpoint<TestService>("/Service.svc", new BasicHttpBinding(), SoapSerializer.DataContractSerializer);
 			});
+
+			app.UseWhen(ctx => ctx.Request.Headers.ContainsKey("SOAPAction"), app2 =>
+			{
+				// For case insensitive path test 
+				app2.UseSoapEndpoint<TestService>("/ServiceCI.svc", new BasicHttpBinding(),
+					SoapSerializer.DataContractSerializer, caseInsensitivePath: true);
+			});
+
 			app.UseWhen(ctx => !ctx.Request.Headers.ContainsKey("SOAPAction"), app2 =>
 			{
 				var transportBinding = new HttpTransportBindingElement();
