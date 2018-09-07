@@ -17,7 +17,6 @@ namespace SoapCore.Tests
 			var webHostBuilder = new WebHostBuilder()
 				.ConfigureLogging((hostingContext, logging) =>
 				{					
-					logging.AddConsole();
 					logging.SetMinimumLevel(LogLevel.Debug);
 				})
 				.UseStartup<Startup>();

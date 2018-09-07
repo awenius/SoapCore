@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
+using System.ServiceModel;
 using System.ServiceModel.Channels;
 using System.Threading.Tasks;
 
@@ -415,7 +416,34 @@ namespace SoapCore
 			if (transformer != null)
 				errorText = transformer.Transform(exception);
 
-			var bodyWriter = new FaultBodyWriter(new Fault(faultDetail) { FaultString = errorText});
+			return WriteErrorResponseMessage(errorText, statusCode, httpContext);
+		}
+
+
+		/// <summary>
+		/// Returns an error response message with a predefined error text.
+		/// </summary>
+		/// <param name="errorText">
+		/// The error text that is added to the response message.
+		/// </param>
+		/// <param name="statusCode">
+		/// The HTTP status code that shall be returned to the caller.
+		/// </param>
+		/// <param name="httpContext">
+		/// The HTTP context that received the response message.
+		/// </param>
+		/// <returns>
+		/// Returns the constructed message (which is implicitly written to the response
+		/// and therefore must not be handled by the caller).
+		/// </returns>
+		private Message WriteErrorResponseMessage(
+			string errorText,
+			int statusCode,
+			HttpContext httpContext)
+		{
+			Message responseMessage;
+
+			var bodyWriter = new FaultBodyWriter(new Fault { FaultString = errorText });
 			responseMessage = Message.CreateMessage(_messageEncoder.MessageVersion, null, bodyWriter);
 			responseMessage = new CustomMessage(responseMessage);
 

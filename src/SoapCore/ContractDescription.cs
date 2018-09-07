@@ -48,21 +48,30 @@ namespace SoapCore
 		/// <param name="operationMethodInfo">
 		/// The method from the interface type that describes the method.
 		/// </param>
+		/// <remarks>
+		/// Usually, the implementingType parameter should be the type of the class
+		/// that actually implements the service.
+		/// But we also support passing the type of the interface as implementingType.
+		/// In this case, the authorization features cannot be used.
+		/// </remarks>
 		/// <returns>
 		/// The method from the implementing class that relates to the passed interface method.
 		/// </returns>
 		private MethodInfo GetImplementingMethod(Type contractType, Type implementingType, MethodInfo operationMethodInfo)
 		{
-			MethodInfo result = null;
+			MethodInfo result = operationMethodInfo;
 
-			InterfaceMapping mapping = implementingType.GetInterfaceMap(contractType);
-
-			for (int ii = 0; ii < mapping.InterfaceMethods.Length; ii++)
+			if (contractType != implementingType)
 			{
-				if (mapping.InterfaceMethods[ii] == operationMethodInfo)
+				InterfaceMapping mapping = implementingType.GetInterfaceMap(contractType);
+
+				for (int ii = 0; ii < mapping.InterfaceMethods.Length; ii++)
 				{
-					result = mapping.TargetMethods[ii];
-					break;
+					if (mapping.InterfaceMethods[ii] == operationMethodInfo)
+					{
+						result = mapping.TargetMethods[ii];
+						break;
+					}
 				}
 			}
 
